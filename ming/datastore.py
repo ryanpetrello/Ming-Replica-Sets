@@ -120,3 +120,47 @@ class DataStore(object):
     @property
     def db(self):
         return getattr(self.conn, self.database, None)
+
+class ReplicaSetDataStore(DataStore):
+
+    def __init__(self, members=['mongo://localhost:27017/gutenberg'], connect_retry=3):
+        # self._tl_value = ThreadLocal()
+        self._conn = None
+        self._lock = Lock()
+        self._connect_retry = connect_retry
+        self.configure(members)
+
+    def __repr__(self):
+        return 'ReplicaSetDataStore(members=%r)' % (self.members)
+
+    def configure(self, members=['mongo://localhost:27017/gutenberg']):
+        log.disabled = 0 # @%#$@ logging fileconfig disables our logger
+        if members is None: members = []
+        self.members = [ parse_uri(s) for s in members if s ]
+        one_url = self.members[0]
+        self.database = one_url['path'][1:]
+        self.scheme = one_url['scheme']
+        if not len(self.members):
+            log.warning(
+                'At least one member is required for a replica set, you specified none')
+        if one_url['scheme'] == 'mim':
+            self._conn = mim.Connection.get()
+        for a in self.members:
+            assert a['scheme'] == self.scheme
+            assert a['path'] == '/' + self.database, \
+                "All connections MUST use the same database"
+
+    def _connect(self):
+        self._conn = None
+        try:
+            if len(self.members):
+                network_timeout = self.members[0]['query'].get('network_timeout')
+                if network_timeout is not None:
+                    network_timeout = float(network_timeout)                
+                self._conn = Connection(
+                    map(lambda x: '%s:%s' % (x.get('host'), x.get('port')), self.members),
+                    network_timeout=network_timeout
+                )
+        except:
+            log.exception('Cannot connect to any members %r' % (self.members))
+        return self._conn
